@@ -246,6 +246,29 @@ async function getEligibleMemberIds(guild) {
   return ids;
 }
 
+function collectEvidenceAttachments(interaction) {
+  const result = [];
+
+  for (let i = 1; i <= 10; i++) {
+    const att = interaction.options.getAttachment(`증거${i}`);
+    if (!att) continue;
+
+    const contentType = att.contentType || '';
+    if (!contentType.startsWith('image/')) {
+      throw new Error(`증거${i}는 사진 파일만 첨부할 수 있습니다.`);
+    }
+
+    result.push({
+      name: att.name,
+      url: att.url,
+      contentType: att.contentType || '',
+      size: att.size || 0
+    });
+  }
+
+  return result;
+}
+
 // ================== 포인트 계산 ==================
 function calculatePoints(input) {
   return (
@@ -569,7 +592,17 @@ async function registerCommands() {
     .setDescription('인처단 행정 보고서 (인처단 역할 전용 / 02시~익일 02시 기준 하루 1회)')
     .addIntegerOption(o => o.setName('보고서처리').setDescription('보고서 처리 건수').setRequired(true))
     .addIntegerOption(o => o.setName('전역전출처리').setDescription('전역 / 전출 처리 건수').setRequired(true))
-    .addIntegerOption(o => o.setName('군탈처리').setDescription('군탈 처리 건수').setRequired(true));
+    .addIntegerOption(o => o.setName('군탈처리').setDescription('군탈 처리 건수').setRequired(true))
+    .addAttachmentOption(o => o.setName('증거1').setDescription('사진 증거 1').setRequired(false))
+    .addAttachmentOption(o => o.setName('증거2').setDescription('사진 증거 2').setRequired(false))
+    .addAttachmentOption(o => o.setName('증거3').setDescription('사진 증거 3').setRequired(false))
+    .addAttachmentOption(o => o.setName('증거4').setDescription('사진 증거 4').setRequired(false))
+    .addAttachmentOption(o => o.setName('증거5').setDescription('사진 증거 5').setRequired(false))
+    .addAttachmentOption(o => o.setName('증거6').setDescription('사진 증거 6').setRequired(false))
+    .addAttachmentOption(o => o.setName('증거7').setDescription('사진 증거 7').setRequired(false))
+    .addAttachmentOption(o => o.setName('증거8').setDescription('사진 증거 8').setRequired(false))
+    .addAttachmentOption(o => o.setName('증거9').setDescription('사진 증거 9').setRequired(false))
+    .addAttachmentOption(o => o.setName('증거10').setDescription('사진 증거 10').setRequired(false));
 
   const 인처단오늘초기화 = new SlashCommandBuilder()
     .setName('인처단오늘초기화')
@@ -829,6 +862,16 @@ client.on('interactionCreate', async interaction => {
       군탈처리: interaction.options.getInteger('군탈처리')
     };
 
+    let evidences = [];
+    try {
+      evidences = collectEvidenceAttachments(interaction);
+    } catch (err) {
+      return interaction.reply({
+        content: `❌ ${err.message}`,
+        ephemeral: true
+      });
+    }
+
     const points = calculatePoints(input);
 
     if (!data.인처단.users[interaction.user.id]) {
@@ -855,7 +898,8 @@ client.on('interactionCreate', async interaction => {
       보고서처리: input.보고서처리,
       전역전출처리: input.전역전출처리,
       군탈처리: input.군탈처리,
-      points
+      points,
+      evidences
     };
 
     recomputeTotals(data.인처단);
@@ -870,7 +914,15 @@ client.on('interactionCreate', async interaction => {
       `**보고서 처리**: ${input.보고서처리}건\n` +
       `**전역 / 전출 처리**: ${input.전역전출처리}건\n` +
       `**군탈 처리**: ${input.군탈처리}건\n` +
-      `**총 포인트**: ${points}포인트`;
+      `**총 포인트**: ${points}포인트\n` +
+      `**증거 사진**: ${evidences.length}개`;
+
+    if (evidences.length > 0) {
+      replyText += '\n\n**첨부된 증거 사진 목록**';
+      for (let i = 0; i < evidences.length; i++) {
+        replyText += `\n${i + 1}. ${evidences[i].url}`;
+      }
+    }
 
     try {
       await appendRowToSheet('인처단!A:F', [
@@ -1203,6 +1255,7 @@ client.login(TOKEN);
 - 보고서처리
 - 전역전출처리
 - 군탈처리
+- 증거1 ~ 증거10 (사진 첨부)
 
 3) 포인트 계산
 - 보고서 처리 1건 = 1포인트
@@ -1222,10 +1275,12 @@ C 보고서 처리
 D 전역 / 전출 처리
 E 군탈 처리
 F 총포인트
+※ 증거 사진은 구글 시트에 저장 안 함
 
 6) 보고 명령어
 - /인처단행정보고
   → 1486733583740567692 역할만 사용 가능
+  → 사진 증거 최대 10개 첨부 가능
 
 7) 조회 명령어
 - /인처단오늘건수
