@@ -173,6 +173,14 @@ function loadData() {
   if (!data.인처단.weekStart) data.인처단.weekStart = '';
   if (!data.인처단.lastWeekStart) data.인처단.lastWeekStart = '';
 
+  for (const u of Object.values(data.인처단.users || {})) {
+    if (!u.daily) u.daily = {};
+    if (typeof u.totalPoints !== 'number') u.totalPoints = 0;
+    if (typeof u.manualAdjust !== 'number') u.manualAdjust = 0;
+    if (!Array.isArray(u.adjustLogs)) u.adjustLogs = [];
+  }
+
+  recomputeTotals(data.인처단);
   dayTotalsCache.clear();
   paginationSessions.clear();
 }
@@ -223,14 +231,27 @@ function daysSinceJoined(member) {
 
 function recomputeTotals(group) {
   for (const u of Object.values(group.users || {})) {
-    let totalPoints = 0;
+    let basePoints = 0;
+
     if (u.daily) {
       for (const d of Object.values(u.daily)) {
-        totalPoints += (d?.points || 0);
+        basePoints += (d?.points || 0);
       }
     }
-    u.totalPoints = totalPoints;
+
+    const manualAdjust = typeof u.manualAdjust === 'number' ? u.manualAdjust : 0;
+    u.totalPoints = basePoints + manualAdjust;
   }
+}
+
+function getBasePointsOfUser(userObj) {
+  let basePoints = 0;
+  if (userObj?.daily) {
+    for (const d of Object.values(userObj.daily)) {
+      basePoints += (d?.points || 0);
+    }
+  }
+  return basePoints;
 }
 
 async function getEligibleMemberIds(guild) {
@@ -439,7 +460,7 @@ function createTotalPointsEmbedPaged(fullList, page, pageSize) {
   const lines = slice.length
     ? slice.map((r, i) => {
         const rankNo = start + i + 1;
-        return `**${rankNo}위** ${r.nick} — **${r.totalPoints}포인트**`;
+        return `**${rankNo}위** ${r.nick} — **${r.totalPoints}포인트** 〔기본: ${r.basePoints} / 수동조정: ${r.manualAdjust}〕`;
       }).join('\n')
     : '데이터가 없습니다.';
 
@@ -527,6 +548,7 @@ function runDailyAutoReset() {
   data.인처단.history.daily[y] = makeDailySnapshot(y);
 
   pruneOldDaily(28);
+  recomputeTotals(data.인처단);
   saveData();
   console.log(`🧹 인처단 어제 스냅샷 저장 완료 (${y})`);
 }
@@ -541,6 +563,7 @@ function runWeeklyAutoReset() {
   data.인처단.weekStart = thisWeekStart;
 
   pruneOldWeekly(16);
+  recomputeTotals(data.인처단);
   saveData();
   console.log(`🔄 인처단 주간 초기화 완료 (weekStart=${thisWeekStart}, lastWeekStart=${lastWeekStart})`);
 }
@@ -623,13 +646,53 @@ async function registerCommands() {
 
     new SlashCommandBuilder()
       .setName('누적포인트')
-      .setDescription('특정 유저의 지금까지 누적 전체 포인트 조회')
+      .setDescription('특정 유저의 최종 누적 포인트(일일합산 + 수동조정) 조회')
       .addUserOption(o => o.setName('대상').setDescription('조회할 유저').setRequired(true))
       .toJSON(),
 
     new SlashCommandBuilder()
       .setName('전체누적포인트')
       .setDescription('인처단 전체 인원의 누적 전체 포인트 조회')
+      .toJSON(),
+
+    new SlashCommandBuilder()
+      .setName('누적포인트수정')
+      .setDescription('특정 유저의 누적 포인트를 수동 조정합니다')
+      .addUserOption(o =>
+        o.setName('대상')
+          .setDescription('수정할 유저')
+          .setRequired(true)
+      )
+      .addStringOption(o =>
+        o.setName('방식')
+          .setDescription('add=추가 / sub=차감 / set=직접설정')
+          .setRequired(true)
+          .addChoices(
+            { name: '추가', value: 'add' },
+            { name: '차감', value: 'sub' },
+            { name: '직접설정', value: 'set' }
+          )
+      )
+      .addIntegerOption(o =>
+        o.setName('포인트')
+          .setDescription('적용할 포인트')
+          .setRequired(true)
+      )
+      .addStringOption(o =>
+        o.setName('사유')
+          .setDescription('수정 사유')
+          .setRequired(false)
+      )
+      .toJSON(),
+
+    new SlashCommandBuilder()
+      .setName('누적포인트조정조회')
+      .setDescription('특정 유저의 누적 포인트 수동 조정 내역 조회')
+      .addUserOption(o =>
+        o.setName('대상')
+          .setDescription('조회할 유저')
+          .setRequired(true)
+      )
       .toJSON(),
 
     인처단오늘초기화.toJSON(),
@@ -650,6 +713,7 @@ client.once('ready', async () => {
   const thisWeekStart = getSundayWeekStart(today);
 
   if (!data.인처단.weekStart) data.인처단.weekStart = thisWeekStart;
+  recomputeTotals(data.인처단);
   saveData();
 
   if (!fs.existsSync(GOOGLE_KEYFILE)) {
@@ -723,11 +787,18 @@ client.on('interactionCreate', async interaction => {
 
           newSession = { mode, key: weekStart, list, pageSize: 28 };
         } else if (mode === 'total') {
-          const list = memberIds.map(uid => ({
-            userId: uid,
-            nick: data.인처단.users?.[uid]?.nick || `<@${uid}>`,
-            totalPoints: data.인처단.users?.[uid]?.totalPoints || 0
-          })).sort((a, b) => b.totalPoints - a.totalPoints);
+          const list = memberIds.map(uid => {
+            const userObj = data.인처단.users?.[uid];
+            const basePoints = getBasePointsOfUser(userObj);
+            const manualAdjust = userObj?.manualAdjust || 0;
+            return {
+              userId: uid,
+              nick: userObj?.nick || `<@${uid}>`,
+              totalPoints: userObj?.totalPoints || 0,
+              basePoints,
+              manualAdjust
+            };
+          }).sort((a, b) => b.totalPoints - a.totalPoints);
 
           newSession = { mode, key: 'all', list, pageSize: 28 };
         }
@@ -878,12 +949,16 @@ client.on('interactionCreate', async interaction => {
       data.인처단.users[interaction.user.id] = {
         nick: displayName,
         totalPoints: 0,
+        manualAdjust: 0,
+        adjustLogs: [],
         daily: {}
       };
     }
 
     const u = data.인처단.users[interaction.user.id];
     u.nick = displayName;
+    if (typeof u.manualAdjust !== 'number') u.manualAdjust = 0;
+    if (!Array.isArray(u.adjustLogs)) u.adjustLogs = [];
 
     if (u.daily[date]) {
       return interaction.reply({
@@ -1065,13 +1140,17 @@ client.on('interactionCreate', async interaction => {
     const saved = data.인처단.users?.[uid];
     const totalPoints = saved?.totalPoints || 0;
     const nick = saved?.nick || target.username;
+    const basePoints = getBasePointsOfUser(saved);
+    const manualAdjust = saved?.manualAdjust || 0;
 
     const embed = new EmbedBuilder()
       .setTitle('누적 포인트 조회')
       .setDescription(
         `**대상:** <@${uid}>\n` +
         `**닉네임:** ${nick}\n` +
-        `**누적 전체 포인트:** ${totalPoints}포인트`
+        `**기본 누적 포인트:** ${basePoints}포인트\n` +
+        `**수동 조정 포인트:** ${manualAdjust}포인트\n` +
+        `**최종 누적 포인트:** ${totalPoints}포인트`
       );
 
     return interaction.reply({ embeds: [embed] });
@@ -1081,11 +1160,19 @@ client.on('interactionCreate', async interaction => {
     if (!guild) return interaction.reply({ content: '❌ 서버 정보를 찾을 수 없습니다.', ephemeral: true });
 
     const memberIds = await getEligibleMemberIds(guild);
-    const list = memberIds.map(uid => ({
-      userId: uid,
-      nick: data.인처단.users?.[uid]?.nick || `<@${uid}>`,
-      totalPoints: data.인처단.users?.[uid]?.totalPoints || 0
-    })).sort((a, b) => b.totalPoints - a.totalPoints);
+    const list = memberIds.map(uid => {
+      const userObj = data.인처단.users?.[uid];
+      const basePoints = getBasePointsOfUser(userObj);
+      const manualAdjust = userObj?.manualAdjust || 0;
+
+      return {
+        userId: uid,
+        nick: userObj?.nick || `<@${uid}>`,
+        totalPoints: userObj?.totalPoints || 0,
+        basePoints,
+        manualAdjust
+      };
+    }).sort((a, b) => b.totalPoints - a.totalPoints);
 
     const pageSize = 28;
     const page = 0;
@@ -1097,6 +1184,152 @@ client.on('interactionCreate', async interaction => {
     const msg = await interaction.reply({ embeds: [embed], components, fetchReply: true });
     paginationSessions.set(msg.id, { mode: 'total', key: 'all', list, pageSize });
     return;
+  }
+
+  // ================== 누적 포인트 수동 수정 ==================
+  if (cmd === '누적포인트수정') {
+    const target = interaction.options.getUser('대상');
+    const mode = interaction.options.getString('방식');
+    const point = interaction.options.getInteger('포인트');
+    const reason = interaction.options.getString('사유') || '사유 없음';
+
+    if (point < 0) {
+      return interaction.reply({
+        content: '❌ 포인트는 0 이상 정수만 입력할 수 있습니다.',
+        ephemeral: true
+      });
+    }
+
+    const uid = target.id;
+
+    if (!data.인처단.users[uid]) {
+      data.인처단.users[uid] = {
+        nick: target.username,
+        totalPoints: 0,
+        manualAdjust: 0,
+        adjustLogs: [],
+        daily: {}
+      };
+    }
+
+    const u = data.인처단.users[uid];
+    if (typeof u.manualAdjust !== 'number') u.manualAdjust = 0;
+    if (!Array.isArray(u.adjustLogs)) u.adjustLogs = [];
+    if (!u.daily) u.daily = {};
+    if (!u.nick) u.nick = target.username;
+
+    const basePoints = getBasePointsOfUser(u);
+    const beforeManual = u.manualAdjust;
+    const beforeTotal = basePoints + beforeManual;
+
+    if (mode === 'add') {
+      u.manualAdjust += point;
+    } else if (mode === 'sub') {
+      u.manualAdjust -= point;
+    } else if (mode === 'set') {
+      u.manualAdjust = point - basePoints;
+    } else {
+      return interaction.reply({
+        content: '❌ 잘못된 방식입니다.',
+        ephemeral: true
+      });
+    }
+
+    recomputeTotals(data.인처단);
+
+    const afterManual = u.manualAdjust;
+    const afterTotal = u.totalPoints;
+
+    u.adjustLogs.unshift({
+      at: new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString(),
+      managerId: interaction.user.id,
+      managerTag: interaction.user.tag,
+      mode,
+      point,
+      reason,
+      beforeManual,
+      afterManual,
+      beforeTotal,
+      afterTotal
+    });
+
+    if (u.adjustLogs.length > 50) {
+      u.adjustLogs = u.adjustLogs.slice(0, 50);
+    }
+
+    saveData();
+
+    const modeText =
+      mode === 'add' ? '추가' :
+      mode === 'sub' ? '차감' :
+      '직접설정';
+
+    const embed = new EmbedBuilder()
+      .setTitle('누적 포인트 수정 완료')
+      .setDescription(
+        `**대상:** <@${uid}>\n` +
+        `**닉네임:** ${u.nick || target.username}\n` +
+        `**수정 방식:** ${modeText}\n` +
+        `**입력 포인트:** ${point}\n` +
+        `**기본 누적 포인트(daily 합산):** ${basePoints}\n` +
+        `**수동 조정 포인트:** ${beforeManual} → ${afterManual}\n` +
+        `**최종 누적 포인트:** ${beforeTotal} → ${afterTotal}\n` +
+        `**사유:** ${reason}\n` +
+        `**처리 관리자:** <@${interaction.user.id}>`
+      );
+
+    return interaction.reply({
+      embeds: [embed],
+      ephemeral: false
+    });
+  }
+
+  if (cmd === '누적포인트조정조회') {
+    const target = interaction.options.getUser('대상');
+    const uid = target.id;
+    const u = data.인처단.users?.[uid];
+
+    if (!u) {
+      return interaction.reply({
+        content: 'ℹ️ 해당 유저의 저장된 데이터가 없습니다.',
+        ephemeral: true
+      });
+    }
+
+    const basePoints = getBasePointsOfUser(u);
+    const manualAdjust = typeof u.manualAdjust === 'number' ? u.manualAdjust : 0;
+    const logs = Array.isArray(u.adjustLogs) ? u.adjustLogs.slice(0, 10) : [];
+
+    const logText = logs.length
+      ? logs.map((log, i) => {
+          const modeText =
+            log.mode === 'add' ? '추가' :
+            log.mode === 'sub' ? '차감' :
+            '직접설정';
+
+          return (
+            `**${i + 1}.** ${log.at}\n` +
+            `- 방식: ${modeText}\n` +
+            `- 포인트: ${log.point}\n` +
+            `- 총 포인트: ${log.beforeTotal} → ${log.afterTotal}\n` +
+            `- 사유: ${log.reason}\n` +
+            `- 관리자: <@${log.managerId}>`
+          );
+        }).join('\n\n')
+      : '수동 조정 내역이 없습니다.';
+
+    const embed = new EmbedBuilder()
+      .setTitle('누적 포인트 수동 조정 조회')
+      .setDescription(
+        `**대상:** <@${uid}>\n` +
+        `**닉네임:** ${u.nick || target.username}\n` +
+        `**기본 누적 포인트(daily 합산):** ${basePoints}\n` +
+        `**수동 조정 포인트:** ${manualAdjust}\n` +
+        `**최종 누적 포인트:** ${u.totalPoints || 0}\n\n` +
+        `**최근 조정 내역(최대 10개)**\n${logText}`
+      );
+
+    return interaction.reply({ embeds: [embed] });
   }
 
   // ================== 초기화 ==================
@@ -1198,6 +1431,8 @@ client.on('interactionCreate', async interaction => {
 
     let userCount = 0;
     let totalPoints = 0;
+    let totalManualAdjust = 0;
+    let totalBasePoints = 0;
     let todayPoints = 0;
     let today보고서처리 = 0;
     let today전역전출처리 = 0;
@@ -1206,6 +1441,8 @@ client.on('interactionCreate', async interaction => {
     for (const u of Object.values(data.인처단.users || {})) {
       userCount++;
       totalPoints += (u.totalPoints || 0);
+      totalManualAdjust += (u.manualAdjust || 0);
+      totalBasePoints += getBasePointsOfUser(u);
 
       const d = u.daily?.[date];
       if (d) {
@@ -1221,7 +1458,9 @@ client.on('interactionCreate', async interaction => {
       .setDescription(
         `**기준 일자(02시~익일 02시 기준)**: ${date}\n\n` +
         `- 등록 인원: ${userCount}명\n` +
-        `- 누적 포인트: ${totalPoints}\n` +
+        `- 기본 누적 포인트 합계: ${totalBasePoints}\n` +
+        `- 수동 조정 포인트 합계: ${totalManualAdjust}\n` +
+        `- 최종 누적 포인트 합계: ${totalPoints}\n` +
         `- 오늘 보고서 처리: ${today보고서처리}건\n` +
         `- 오늘 전역 / 전출 처리: ${today전역전출처리}건\n` +
         `- 오늘 군탈 처리: ${today군탈처리}건\n` +
@@ -1303,18 +1542,32 @@ F 총포인트
 - /누적포인트 대상:@유저
 - /전체누적포인트
 
-11) 1일 1회 제한
+11) 누적 포인트 수동 조정 명령어
+- /누적포인트수정
+  방식:
+  - 추가(add)
+  - 차감(sub)
+  - 직접설정(set)
+- /누적포인트조정조회
+
+12) 수동 조정 방식
+- 기본 누적 포인트 = daily 합산
+- 수동 조정 포인트 = 관리자가 추가/차감/직접설정한 값
+- 최종 누적 포인트 = 기본 누적 포인트 + 수동 조정 포인트
+※ recomputeTotals 실행 시에도 수동 조정값이 유지됨
+
+13) 1일 1회 제한
 - /인처단행정보고는 02:00 ~ 익일 02:00 기준 하루 1회만 가능
 
-12) 시트 탭 이름
+14) 시트 탭 이름
 - 반드시 '인처단'
 
-13) 스프레드시트 정보
+15) 스프레드시트 정보
 - SPREADSHEET_ID: 1-ab0QPdvcBCj1uRk-1iMv8vyxvWbQJO07coZISBU0TM
 - SERVICE_ACCOUNT_EMAIL: ffulfillment-management-bot4@fulfillment-management-bot4.iam.gserviceaccount.com
 - CLIENT_ID: 1489904266461319218
 
-14) Railway 환경변수
+16) Railway 환경변수
 - TOKEN
 - GOOGLE_SA_JSON
 - (선택) GOOGLE_KEYFILE
