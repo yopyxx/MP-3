@@ -294,8 +294,8 @@ function collectEvidenceAttachments(interaction) {
 function calculatePoints(input) {
   return (
     (input.보고서처리 || 0) * 1 +
-    (input.전역전출처리 || 0) * 10 +
-    (input.군탈처리 || 0) * 10
+    (input.전역전출처리 || 0) * 5 +
+    (input.군탈처리 || 0) * 5
   );
 }
 
@@ -386,7 +386,7 @@ function createDailyEmbedPaged(dateStr, fullList, page, pageSize, titlePrefix) {
     .setDescription(
       `※ ${DAILY_MIN_POINTS}포인트 이하는 표시되지 않습니다.\n\n${lines}`
     )
-    .setFooter({ text: `페이지 ${p + 1}/${totalPages} · 보고서처리 1점 / 전역·전출 10점 / 군탈 10점` });
+    .setFooter({ text: `페이지 ${p + 1}/${totalPages} · 보고서처리 1점 / 전역·전출 5점 / 군탈 5점` });
 }
 
 function createWeeklyEmbedPaged(weekStart, fullList, page, pageSize, titlePrefix) {
@@ -1465,7 +1465,7 @@ client.on('interactionCreate', async interaction => {
         `- 오늘 전역 / 전출 처리: ${today전역전출처리}건\n` +
         `- 오늘 군탈 처리: ${today군탈처리}건\n` +
         `- 오늘 총 포인트: ${todayPoints}\n\n` +
-        `※ 보고서처리 1건=1포인트 / 전역·전출 1건=10포인트 / 군탈 1건=10포인트\n` +
+        `※ 보고서처리 1건=1포인트 / 전역·전출 1건=5포인트 / 군탈 1건=5포인트\n` +
         `※ ${DAILY_MIN_POINTS}포인트 이하는 오늘/어제/주간 조회에서 제외됩니다.\n` +
         `※ 행정보고는 02시~익일 02시 기준 하루 1회만 제출 가능합니다.`
       );
@@ -1498,8 +1498,8 @@ client.login(TOKEN);
 
 3) 포인트 계산
 - 보고서 처리 1건 = 1포인트
-- 전역 / 전출 처리 1건 = 10포인트
-- 군탈 처리 1건 = 10포인트
+- 전역 / 전출 처리 1건 = 5포인트
+- 군탈 처리 1건 = 5포인트
 
 4) 일일/주간 기준
 - 일일 최소 행정 기준: 20포인트
@@ -1515,6 +1515,7 @@ D 전역 / 전출 처리
 E 군탈 처리
 F 총포인트
 ※ 증거 사진은 구글 시트에 저장 안 함
+※ F열 총포인트는 수정된 계산식(1 / 5 / 5) 기준으로 저장됨
 
 6) 보고 명령어
 - /인처단행정보고
